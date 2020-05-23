@@ -20,12 +20,9 @@ except ImportError:
     from yaml import Loader, Dumper
 
 root_dir = os.path.dirname(os.path.realpath(__file__))
-base_dir = os.path.join(root_dir, '.auxilium')
-config_path = os.path.join(root_dir, 'auxilium.yml')
+# base_dir = os.path.join(root_dir, '.auxilium')
+# config_path = os.path.join(root_dir, 'auxilium.yml')
 tmp_script_path = '/tmp/auxilium_tmp'
-
-stream = open(config_path, 'r')
-config = load(stream, Loader=Loader)
 
 variables = {}
 
@@ -246,8 +243,16 @@ signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--debug', dest='debug', action='store_true')
+parser.add_argument('--script-dir', dest='script_dir_path', nargs='?', type=str, default=os.path.join(root_dir, '.auxilium'))
+parser.add_argument('--config', dest='config_path', nargs='?', type=str, default=os.path.join(root_dir, 'auxilium.yml'))
 parser.add_argument('path', nargs='?', type=str, default=None)
 args = parser.parse_args()
+
+base_dir = args.script_dir_path
+config_path = args.config_path
+
+stream = open(config_path, 'r')
+config = load(stream, Loader=Loader)
 
 if args.path is not None:
     paths = str.split(args.path, '/')
