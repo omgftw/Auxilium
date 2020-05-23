@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+import argparse
+import datetime
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+
+import boto3
+from jinja2 import Template
+from yaml import load
+
+from termcolor import colored
+
+try:
+    from yaml import CLoader as Loader, CDumper as Dumper
+except ImportError:
+    from yaml import Loader, Dumper
+
+root_dir = os.path.dirname(os.path.realpath(__file__))
+base_dir = os.path.join(root_dir, '.auxilium')
+config_path = os.path.join(root_dir, 'auxilium.yml')
+tmp_script_path = '/tmp/auxilium_tmp'
+
+stream = open(config_path, 'r')
+config = load(stream, Loader=Loader)
+
+variables = {}
+
+aws_instances = {}
+aws_secrets = {}
+
+
+def get_aws_instances():
+    start = time_event()
+    filters = []
+    for instance_id in aws_instances:
+        instance = aws_instances[instance_id]
+        instance_name = instance.get('name')
+        if instance_name is not None:
+            instance_name = template_with_variables(instance_name)
+            print(str.format('Fetching AWS instance "{}"', instance_name))
+            filters.append({
+                'Name': 'tag:Name',
+                'Values': [instance_name],
+            })
+        filters.append({
+            'Name': 'instance-state-name',
+            'Values': ['running']
+        })
+        inst_args = {'Filters': filters}
+        limit = instance.get('limit')
+        profile_name = instance.get('profile') or variables.get('AWS_PROFILE') or variables.get('aws_profile') or 'default'
+        ec2 = get_aws_session(profile_name).resource('ec2')
+        instances_results = ec2.instances.filter(**inst_args)
+        instances = list(instances_results.limit(limit))
+        if len(instances) == 0:
+            print('No instances found matching ' + instance_name)
+            print(colored('Due to the fact that this could cause undesired side-effects in scripts, this is a fatal '
+                          'error. Exiting...', 'red'))
+            exit(1)
+        variables[instance_id] = instances
+    debug_print('Fetching instances took ' + time_event(start) + 'ms')
+
+
+def get_aws_secrets():
+    print('Fetching secrets...')
+    start = time_event()
+    for secret_id in aws_secrets:
+        secret = aws_secrets[secret_id]
+        secret_name = secret.get('name')
+        if secret_name is not None:
+            profile_name = secret.get('profile') or variables.get('AWS_PROFILE') or variables.get('aws_profile') or 'default'
+            sm = get_aws_session(profile_name).client(service_name='secretsmanager')
+            sm_response = sm.get_secret_value(SecretId=secret_name)
+            variables[secret_id] = json.loads(sm_response['SecretString'])
+    debug_print('Fetching secrets took ' + time_event(start) + 'ms')
+
+
+aws_sessions = {}
+
+
+def get_aws_session(profile_name):
+    session = aws_sessions.get(profile_name)
+    if session is not None:
+        return session
+
+    session = boto3.Session(profile_name=profile_name)
+    aws_sessions[profile_name] = session
+    return session
+
+
+def get_all_env_vars(paths, configs):
+    current_path = paths[0] if len(paths) > 0 else ''
+    for conf in configs:
+        conf_item = configs[conf]
+        if type(conf_item) is dict or type(conf_item) is list:
+            if str.startswith(conf, 'aws_instance_'):
+                aws_instances[conf] = conf_item
+            elif str.startswith(conf, 'aws_secret_'):
+                aws_secrets[conf] = conf_item
+            else:
+                pattern = re.compile(conf)
+                if pattern.match(current_path):
+                    get_all_env_vars(paths[1:], conf_item)
+        else:
+            conf_val = configs[conf]
+            if conf_val is not None:
+                # os.environ[conf] = conf_val
+                variables[conf] = conf_val
+
+
+internal_path = []
+
+
+def template_with_variables(value, ignore_errors=False):
+    template = Template(value)
+    try:
+        return template.render(**variables)
+    except Exception as e:
+        if ignore_errors:
+            return None
+        else:
+            raise e
+
+
+# Returns true if anything was updated during templating
+def variable_templating_pass(ignore_errors=False):
+    any_updated = False
+    for variable_name in variables:
+        variable_value = variables[variable_name]
+        if isinstance(variable_value, str):
+            rendered = template_with_variables(variable_value, ignore_errors)
+            if rendered is None:
+                continue
+            if rendered != variable_value:
+                any_updated = True
+            variables[variable_name] = rendered
+            os.environ[variable_name] = rendered
+    return any_updated
+
+
+# Iterative templating passes until no variables are left that can be rendered
+def template_variables(ignore_errors=False):
+    start = time_event()
+    pass_count = 0
+    while variable_templating_pass(ignore_errors):
+        pass_count += 1
+    debug_print(str.format('Templating ({} {}) took {} ms', pass_count,
+                           'pass' if pass_count == 1 else 'passes', time_event(start)))
+
+
+# WARNING: inconsistent return types
+def time_event(dt=None):
+    if dt is None:
+        return datetime.datetime.now()
+    delta = datetime.datetime.now() - dt
+    return str.format('{:.0f}', delta.total_seconds() * 1000)
+
+
+def debug_print(msg):
+    if args.debug:
+        print(colored(msg, 'yellow'))
+
+
+def execute_file(file_path):
+    with open(file_path) as file:
+        # Do initial templating passes. We ignore errors here as some fields may require sm/ec2 data
+        template_variables(True)
+
+        # Get AWS data
+        get_aws_secrets()
+        get_aws_instances()
+
+        # Do a final templating pass
+        template_variables()
+
+        # Read and template script
+        script = file.read()
+        template = Template(script)
+        script = template.render(**variables)
+        # Save script to a temp location
+        with open(tmp_script_path, 'w') as output:
+            output.write(script)
+        # Make the script executable by the current user
+        os.chmod(tmp_script_path, 0o700)
+
+        print('Executing script...')
+        subprocess.call(tmp_script_path)
+
+        # cleanup
+        if args.debug:
+            print(str.format('Debug mode enabled. Skipping cleanup of {}', tmp_script_path))
+        else:
+            os.remove(tmp_script_path)
+
+
+def get_files(path):
+    scripts_list = os.listdir(path)
+    scripts = []
+    for script in scripts_list:
+        scripts.append({
+            'name': script,
+            'type': 'dir' if os.path.isdir(os.path.join(path, script)) else 'file',
+        })
+
+    scripts = sorted(scripts, key=lambda k: (k['type'], k['name']))
+    for i, script in enumerate(scripts):
+        print_str = str(i) + ': '
+        print_str += '[+] ' + script['name'] + '/' if script['type'] == 'dir' else './' + script['name']
+        print(print_str)
+
+    selected_script = None
+    valid_input = False
+    while not valid_input:
+        inp = input('Please select an option: ')
+        if inp.isdigit():
+            if 0 <= int(inp) < len(scripts):
+                valid_input = True
+                selected_script = scripts[int(inp)]
+        else:
+            # Remove optional extraneous characters (./ or /)
+            inp = re.sub('\\./|/', '', inp)
+            item = [x for x in scripts if x['name'] == inp]
+            if len(item) > 0:
+                valid_input = True
+                selected_script = item[0]
+        if not valid_input:
+            print('Invalid selection, please try again...')
+
+    script_name = selected_script['name']
+    new_path = os.path.join(path, script_name)
+
+    internal_path.append(script_name)
+    if selected_script['type'] == 'dir':
+        get_files(new_path)
+    else:
+        get_all_env_vars(internal_path, config)
+        # subprocess.call(new_path)
+        execute_file(new_path)
+
+
+signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--debug', dest='debug', action='store_true')
+parser.add_argument('path', nargs='?', type=str, default=None)
+args = parser.parse_args()
+
+if args.path is not None:
+    paths = str.split(args.path, '/')
+    get_all_env_vars(paths, config)
+    execute_file(os.path.join(base_dir, *paths))
+else:
+    get_files(base_dir)
