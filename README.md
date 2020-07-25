@@ -56,14 +56,10 @@ The script outputs a temp file `/tmp/aux_tmp` when running. This is the final te
 
 ## Authentication
 
-## Additional Information
+## Bring your own config
 
-To reduce redundancy, re-usable scripts are placed in a `base` directory and sym-linked to other directories
-
-## IMPORTANT
-
-If you do not have proper GPG keys to decrypt auxilium.yml.gpg an example file has been included.
-This should be renamed from `auxilium.example.yml` to `auxilium.yml` and updated with proper information.
+There are 2 ways to use your own custom configuration with Auxilium. You can either overwrite the default config and scripts directories located at `/usr/local/bin/auxilium.yaml` AND `/usr/local/bin/.auxilium` respectively, by default.
+Alternatively, you can override the default locations using the `--config` and `--script-dir` arguments.
 
 ## TODO
 
