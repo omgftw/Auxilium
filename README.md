@@ -1,4 +1,4 @@
-# EB Connect
+# Auxilium
 
 ## Installation
 ```shell script
@@ -33,11 +33,11 @@ To access a resource, you must have the appropriate SSH key added to your agent.
 The script can be used interactively by just launching it. It will prompt you with the available options.
 You can either type the name of the option (case-sensitive) or the corresponding number.
 ```shell script
-ebconnect
+aux
 ```
 Alternatively, if you know the path of the script you would like to launch you can also pass it as an arg:
 ```shell script
-ebconnect vcc/dev/nomad
+aux vcc/dev/nomad
 ```
 
 ## Special keywords and prefixes
@@ -52,7 +52,7 @@ aws_profile
 
 ## Debugging
 
-The script outputs a temp file `/tmp/ebconnect_tmp` when running. This is the final templated version of your script.
+The script outputs a temp file `/tmp/aux_tmp` when running. This is the final templated version of your script.
 
 ## Authentication
 
@@ -62,8 +62,8 @@ To reduce redundancy, re-usable scripts are placed in a `base` directory and sym
 
 ## IMPORTANT
 
-If you do not have proper GPG keys to decrypt ebconnect.yml.gpg an example file has been included.
-This should be renamed from `ebconnect.example.yml` to `ebconnect.yml` and updated with proper information.
+If you do not have proper GPG keys to decrypt auxilium.yml.gpg an example file has been included.
+This should be renamed from `auxilium.example.yml` to `auxilium.yml` and updated with proper information.
 
 ## TODO
 
